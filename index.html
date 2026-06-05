@@ -39,17 +39,23 @@
         }
         h1, h2, h3 { margin-top: 0; color: #fff; }
         h1 { font-size: 1.2rem; border-bottom: 1px solid #444; padding-bottom: 10px; margin-bottom: 15px; }
-        h2 { font-size: 1rem; margin-top: 15px; background: #2a2a2a; padding: 5px; border-radius: 4px; cursor: pointer; }
+        h2 { font-size: 1rem; margin-top: 15px; background: #2a2a2a; padding: 5px; border-radius: 4px; cursor: pointer; user-select: none; }
         .control-group { margin-bottom: 15px; border-left: 2px solid #555; padding-left: 10px; }
         .control-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; font-size: 0.85rem; }
         input[type=range] { flex: 1; margin: 0 10px; }
         input[type=color] { border: none; padding: 0; width: 30px; height: 30px; cursor: pointer; }
         input[type=number] { width: 50px; background: #333; color: #fff; border: 1px solid #555; border-radius: 3px; padding: 2px; }
-        button { background: #4caf50; color: white; border: none; padding: 8px 12px; cursor: pointer; border-radius: 4px; font-weight: bold; width: 100%; margin-bottom: 10px; }
+        input[type=checkbox] { width: 18px; height: 18px; cursor: pointer; }
+        select { background: #333; color: #fff; border: 1px solid #555; border-radius: 3px; padding: 4px; }
+        button { background: #4caf50; color: white; border: none; padding: 8px 12px; cursor: pointer; border-radius: 4px; font-weight: bold; width: 100%; }
         button:hover { background: #45a049; }
+        .main-actions { display: flex; gap: 10px; margin-bottom: 10px; }
+        #btn-reset { background: #f44336; }
+        #btn-reset:hover { background: #d32f2f; }
         .add-remove-btns { display: flex; gap: 10px; margin-bottom: 10px; }
         .add-remove-btns button { flex: 1; background: #2196f3; }
         .add-remove-btns button.remove { background: #f44336; }
+        .add-remove-btns button.remove:hover { background: #d32f2f; }
         .collapsible-content { display: none; }
         .collapsible-content.active { display: block; }
     </style>
@@ -62,12 +68,16 @@
 
 <div id="ui-container">
     <h1>Interference Shader</h1>
-    <button id="btn-randomise">Randomise All</button>
+    <div class="main-actions">
+        <button id="btn-randomise">Randomise</button>
+        <button id="btn-reset">Reset</button>
+    </div>
     <div id="controls"></div>
 </div>
 
 <script>
-// --- WebGL Shader Code ---
+// --- WebGL Shaders ---
+
 const vsSource = `#version 300 es
     in vec4 a_position;
     out vec2 v_uv;
@@ -77,7 +87,7 @@ const vsSource = `#version 300 es
     }
 `;
 
-const fsSource = `#version 300 es
+const fsMain = `#version 300 es
     precision highp float;
     out vec4 fragColor;
     in vec2 v_uv;
@@ -86,9 +96,15 @@ const fsSource = `#version 300 es
     uniform float u_time;
 
     // Colors
+    uniform int u_colorCount;
     uniform vec3 u_color1;
     uniform vec3 u_color2;
     uniform vec3 u_color3;
+    
+    // Animation
+    uniform float u_oscActive;
+    uniform float u_oscFreq;
+    uniform float u_oscShape;
 
     // Global Params
     uniform float u_step_factor;
@@ -99,70 +115,30 @@ const fsSource = `#version 300 es
     uniform float u_shake_freq;
     uniform float u_rot_speed;
 
-    // Post-processing
-    uniform float u_noise_freq;
-    uniform float u_noise_strength;
-    uniform float u_noise_bias; // 0, 0.5, 1
+    // Vignetting
     uniform float u_vig_center;
     uniform float u_vig_edge;
     uniform float u_vig_bias;
 
     // Structs for patterns
-    struct Stripe {
-        float is_active;
-        vec2 pivot;
-        float period;
-        float angle;
-        float speed;
-        float rot_speed;
-        float extent;
-        float strength;
-    };
-
-    struct Ripple {
-        float is_active;
-        vec2 pivot;
-        float period;
-        float speed;
-        vec2 rot_pivot;
-        float rot_speed;
-        float noise_move;
-        float strength;
-    };
-
-    struct Ray {
-        float is_active;
-        vec2 pivot;
-        float period;
-        float speed;
-        vec2 rot_pivot;
-        float rot_speed;
-        float noise_move;
-        float strength;
-    };
+    struct Stripe { float is_active; vec2 pivot; float period; float angle; float speed; float rot_speed; float extent; float strength; };
+    struct Ripple { float is_active; vec2 pivot; float period; float speed; vec2 rot_pivot; float rot_speed; float noise_move; float strength; };
+    struct Ray { float is_active; vec2 pivot; float period; float speed; vec2 rot_pivot; float rot_speed; float noise_move; float strength; };
 
     uniform Stripe u_stripes[8];
     uniform Ripple u_ripples[8];
     uniform Ray u_rays[8];
 
-    // Helpers
     float mod_sin(float x) {
         float s = sin(x);
-        float st = sign(s); 
-        return mix(s, st, u_step_factor);
-    }
-
-    float rand(vec2 co) {
-        return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453);
+        return mix(s, sign(s), u_step_factor);
     }
 
     vec2 rotate(vec2 p, float a, vec2 pivot) {
-        float s = sin(a);
-        float c = cos(a);
+        float s = sin(a); float c = cos(a);
         p -= pivot;
         p = vec2(p.x * c - p.y * s, p.x * s + p.y * c);
-        p += pivot;
-        return p;
+        return p + pivot;
     }
 
     vec2 get_noise_offset(float seed, float amt) {
@@ -172,14 +148,10 @@ const fsSource = `#version 300 es
     }
 
     void main() {
-        // Setup coordinates
         vec2 uv = v_uv;
-        uv.x *= u_resolution.x / u_resolution.y; // correct aspect ratio
-        
-        // Preserve un-transformed UV for Vignette
+        uv.x *= u_resolution.x / u_resolution.y; 
         vec2 raw_uv = uv; 
 
-        // Apply Global Transforms
         vec2 shake = vec2(sin(u_time * u_shake_freq), cos(u_time * u_shake_freq * 1.3)) * u_shake_amp;
         uv += u_offset + shake;
         uv.x += uv.y * u_shear.x;
@@ -192,14 +164,8 @@ const fsSource = `#version 300 es
         // Stripes
         for(int i=0; i<8; i++) {
             if(u_stripes[i].is_active < 0.5) continue;
-            vec2 p = uv;
-            float angle = u_stripes[i].angle + u_time * u_stripes[i].rot_speed;
-            p = rotate(p, -angle, u_stripes[i].pivot);
-            p -= u_stripes[i].pivot;
-            
-            float phase = p.x * u_stripes[i].period - u_time * u_stripes[i].speed;
-            float val = mod_sin(phase);
-            
+            vec2 p = rotate(uv, -(u_stripes[i].angle + u_time * u_stripes[i].rot_speed), u_stripes[i].pivot) - u_stripes[i].pivot;
+            float val = mod_sin(p.x * u_stripes[i].period - u_time * u_stripes[i].speed);
             float fade = 1.0;
             if(u_stripes[i].extent > 0.0) {
                 float dist = abs(p.x * u_stripes[i].period) / (3.14159 * 2.0);
@@ -212,134 +178,239 @@ const fsSource = `#version 300 es
         for(int i=0; i<8; i++) {
             if(u_ripples[i].is_active < 0.5) continue;
             vec2 pivot = u_ripples[i].pivot + get_noise_offset(float(i)*10.0, u_ripples[i].noise_move);
-            vec2 rot_piv = u_ripples[i].rot_pivot;
-            
-            vec2 p = uv;
-            p = rotate(p, -u_time * u_ripples[i].rot_speed, rot_piv);
-            
-            float dist = length(p - pivot);
-            float phase = dist * u_ripples[i].period - u_time * u_ripples[i].speed;
-            c_u += mod_sin(phase) * u_ripples[i].strength;
+            vec2 p = rotate(uv, -u_time * u_ripples[i].rot_speed, u_ripples[i].rot_pivot);
+            c_u += mod_sin(length(p - pivot) * u_ripples[i].period - u_time * u_ripples[i].speed) * u_ripples[i].strength;
         }
 
         // Rays
         for(int i=0; i<8; i++) {
             if(u_rays[i].is_active < 0.5) continue;
             vec2 pivot = u_rays[i].pivot + get_noise_offset(float(i)*20.0, u_rays[i].noise_move);
-            vec2 rot_piv = u_rays[i].rot_pivot;
-            
-            vec2 p = uv;
-            p = rotate(p, -u_time * u_rays[i].rot_speed, rot_piv);
-            
+            vec2 p = rotate(uv, -u_time * u_rays[i].rot_speed, u_rays[i].rot_pivot);
             vec2 d = p - pivot;
-            float angle = atan(d.y, d.x);
-            // floor period to avoid seams if needed, but smooth here for flexibility
-            float phase = angle * floor(u_rays[i].period) - u_time * u_rays[i].speed;
-            c_u += mod_sin(phase) * u_rays[i].strength;
+            c_u += mod_sin(atan(d.y, d.x) * floor(u_rays[i].period) - u_time * u_rays[i].speed) * u_rays[i].strength;
         }
 
-        // Normalize c_u wrapping via sine for endless interference mixing
-        c_u = sin(c_u) * 0.5 + 0.5;
-
-        // Visual Noise
-        if(u_noise_strength > 0.0) {
-            float n = rand(gl_FragCoord.xy * u_noise_freq + u_time);
-            c_u = mix(c_u, mix(c_u, u_noise_bias, n), u_noise_strength);
+        // Oscillation & Normalization
+        if (u_oscActive > 0.5) {
+            float osc = sin(u_time * u_oscFreq);
+            osc = sign(osc) * pow(abs(osc), u_oscShape);
+            c_u = sin(c_u) * osc; 
+        } else {
+            c_u = sin(c_u);
         }
+        
+        c_u = c_u * 0.5 + 0.5; // Map -1..1 to 0..1
 
         // Vignetting
         if(u_vig_edge > 0.0) {
-            float d = length(raw_uv);
-            float vig = smoothstep(u_vig_center, u_vig_edge, d);
-            c_u = mix(c_u, u_vig_bias, vig);
+            c_u = mix(c_u, u_vig_bias, smoothstep(u_vig_center, u_vig_edge, length(raw_uv)));
         }
 
-        // Color Interpolation (2 to 3 colors)
+        // Color Interpolation
         vec3 final_color;
-        if(c_u < 0.5) {
-            final_color = mix(u_color1, u_color2, c_u * 2.0);
+        if(u_colorCount == 2) {
+            final_color = mix(u_color1, u_color2, c_u);
         } else {
-            final_color = mix(u_color2, u_color3, (c_u - 0.5) * 2.0);
+            final_color = c_u < 0.5 ? mix(u_color1, u_color2, c_u * 2.0) : mix(u_color2, u_color3, (c_u - 0.5) * 2.0);
         }
-
+        
         fragColor = vec4(final_color, 1.0);
     }
 `;
 
-// --- UI Schema and State ---
-const MAX_INSTANCES = 8;
-const state = {
-    colors: {
-        col1: { val: '#ff0055', type: 'color' },
-        col2: { val: '#000000', type: 'color' },
-        col3: { val: '#00aaff', type: 'color' }
-    },
-    global: {
-        scale: { val: 2.0, min: 0.1, max: 10, step: 0.1 },
-        shearX: { val: 0, min: -2, max: 2, step: 0.01 },
-        shearY: { val: 0, min: -2, max: 2, step: 0.01 },
-        offsetX: { val: 0, min: -5, max: 5, step: 0.1 },
-        offsetY: { val: 0, min: -5, max: 5, step: 0.1 },
-        shakeAmp: { val: 0, min: 0, max: 2, step: 0.01 },
-        shakeFreq: { val: 5, min: 0, max: 20, step: 0.1 },
-        rotSpeed: { val: 0, min: -5, max: 5, step: 0.01 },
-        stepFactor: { val: 0, min: 0, max: 1, step: 0.01 }
-    },
-    effects: {
-        noiseFreq: { val: 1, min: 0.1, max: 5, step: 0.1 },
-        noiseStrength: { val: 0, min: 0, max: 1, step: 0.01 },
-        noiseBias: { val: 0.5, min: 0, max: 1, step: 0.5 },
-        vigCenter: { val: 0.5, min: 0, max: 2, step: 0.01 },
-        vigEdge: { val: 1.5, min: 0, max: 3, step: 0.01 },
-        vigBias: { val: 0, min: 0, max: 1, step: 0.5 }
-    },
-    stripes: [],
-    ripples: [],
-    rays: []
-};
+const fsTrail = `#version 300 es
+    precision highp float;
+    in vec2 v_uv;
+    out vec4 fragColor;
+    uniform sampler2D u_main;
+    uniform sampler2D u_history;
+    uniform float u_trail;
+    void main() {
+        vec2 texCoord = v_uv * 0.5 + 0.5;
+        vec3 mainCol = texture(u_main, texCoord).rgb;
+        vec3 histCol = texture(u_history, texCoord).rgb;
+        fragColor = vec4(mix(mainCol, histCol, u_trail), 1.0);
+    }
+`;
 
-// Templates for new instances
+const fsPost = `#version 300 es
+    precision highp float;
+    in vec2 v_uv;
+    out vec4 fragColor;
+    
+    uniform sampler2D u_image;
+    uniform vec2 u_res;
+    uniform float u_time;
+    uniform float u_blurRadius;
+    uniform float u_glow;
+    uniform float u_brightness;
+    uniform float u_contrast;
+
+    // Noise properties
+    uniform float u_noise_freq;
+    uniform float u_noise_strength;
+    uniform float u_noise_bias; 
+
+    float rand(vec2 co) { return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453); }
+
+    void main() {
+        vec2 tc = v_uv * 0.5 + 0.5;
+        vec3 color = texture(u_image, tc).rgb;
+        vec3 blur = color;
+
+        // Fast 9-tap Box Blur
+        if(u_blurRadius > 0.0 || u_glow > 0.0) {
+            vec2 off = u_blurRadius / u_res;
+            blur += texture(u_image, tc + vec2(off.x, 0.0)).rgb;
+            blur += texture(u_image, tc + vec2(-off.x, 0.0)).rgb;
+            blur += texture(u_image, tc + vec2(0.0, off.y)).rgb;
+            blur += texture(u_image, tc + vec2(0.0, -off.y)).rgb;
+            blur += texture(u_image, tc + vec2(off.x, off.y)).rgb;
+            blur += texture(u_image, tc + vec2(-off.x, -off.y)).rgb;
+            blur += texture(u_image, tc + vec2(off.x, -off.y)).rgb;
+            blur += texture(u_image, tc + vec2(-off.x, off.y)).rgb;
+            blur /= 9.0;
+        }
+
+        if(u_blurRadius > 0.0) {
+            color = mix(color, blur, clamp(u_blurRadius, 0.0, 1.0));
+        }
+        
+        // Glow and Contrast applied
+        color += max(blur - 0.5, 0.0) * u_glow;
+        color = (color - 0.5) * u_contrast + 0.5 + u_brightness;
+
+        // Noise applied LAST so it stays sharp
+        if(u_noise_strength > 0.0) {
+            float n = rand(gl_FragCoord.xy * u_noise_freq + u_time);
+            color = mix(color, mix(color, vec3(u_noise_bias), n), u_noise_strength);
+        }
+
+        fragColor = vec4(color, 1.0);
+    }
+`;
+
+// --- UI Schema and State Definitions ---
+const MAX_INSTANCES = 8;
+
 const stripeTemplate = () => ({
-    active: { val: 1, type: 'hidden' },
-    strength: { val: 1, min: -2, max: 2, step: 0.1 },
-    period: { val: 10, min: 0.1, max: 50, step: 0.1 },
-    speed: { val: 2, min: -10, max: 10, step: 0.1 },
-    angle: { val: 0, min: 0, max: 6.28, step: 0.01 },
-    rotSpeed: { val: 0, min: -2, max: 2, step: 0.01 },
-    pivotX: { val: 0, min: -2, max: 2, step: 0.01 },
-    pivotY: { val: 0, min: -2, max: 2, step: 0.01 },
-    extent: { val: 0, min: 0, max: 20, step: 1 } // 0 = infinite
+    active: { val: 1, type: 'hidden' }, strength: { val: 1, min: -2, max: 2, step: 0.1 }, period: { val: 10, min: 0.1, max: 50, step: 0.1 },
+    speed: { val: 2, min: -10, max: 10, step: 0.1 }, angle: { val: 0, min: 0, max: 6.28, step: 0.01 }, rotSpeed: { val: 0, min: -2, max: 2, step: 0.01 },
+    pivotX: { val: 0, min: -2, max: 2, step: 0.01 }, pivotY: { val: 0, min: -2, max: 2, step: 0.01 }, extent: { val: 0, min: 0, max: 20, step: 1 }
 });
 
 const rippleTemplate = () => ({
-    active: { val: 1, type: 'hidden' },
-    strength: { val: 1, min: -2, max: 2, step: 0.1 },
-    period: { val: 10, min: 0.1, max: 50, step: 0.1 },
-    speed: { val: 2, min: -10, max: 10, step: 0.1 },
-    pivotX: { val: 0, min: -2, max: 2, step: 0.01 },
-    pivotY: { val: 0, min: -2, max: 2, step: 0.01 },
-    rotPivX: { val: 0, min: -2, max: 2, step: 0.01 },
-    rotPivY: { val: 0, min: -2, max: 2, step: 0.01 },
-    rotSpeed: { val: 0, min: -2, max: 2, step: 0.01 },
+    active: { val: 1, type: 'hidden' }, strength: { val: 1, min: -2, max: 2, step: 0.1 }, period: { val: 10, min: 0.1, max: 50, step: 0.1 },
+    speed: { val: 2, min: -10, max: 10, step: 0.1 }, pivotX: { val: 0, min: -2, max: 2, step: 0.01 }, pivotY: { val: 0, min: -2, max: 2, step: 0.01 },
+    rotPivX: { val: 0, min: -2, max: 2, step: 0.01 }, rotPivY: { val: 0, min: -2, max: 2, step: 0.01 }, rotSpeed: { val: 0, min: -2, max: 2, step: 0.01 },
     noiseMove: { val: 0, min: 0, max: 2, step: 0.01 }
 });
 
 const rayTemplate = () => ({
-    active: { val: 1, type: 'hidden' },
-    strength: { val: 1, min: -2, max: 2, step: 0.1 },
-    period: { val: 10, min: 1, max: 50, step: 1 },
-    speed: { val: 1, min: -10, max: 10, step: 0.1 },
-    pivotX: { val: 0, min: -2, max: 2, step: 0.01 },
-    pivotY: { val: 0, min: -2, max: 2, step: 0.01 },
-    rotPivX: { val: 0, min: -2, max: 2, step: 0.01 },
-    rotPivY: { val: 0, min: -2, max: 2, step: 0.01 },
-    rotSpeed: { val: 0, min: -2, max: 2, step: 0.01 },
+    active: { val: 1, type: 'hidden' }, strength: { val: 1, min: -2, max: 2, step: 0.1 }, period: { val: 10, min: 1, max: 200, step: 1 },
+    speed: { val: 1, min: -10, max: 10, step: 0.1 }, pivotX: { val: 0, min: -2, max: 2, step: 0.01 }, pivotY: { val: 0, min: -2, max: 2, step: 0.01 },
+    rotPivX: { val: 0, min: -2, max: 2, step: 0.01 }, rotPivY: { val: 0, min: -2, max: 2, step: 0.01 }, rotSpeed: { val: 0, min: -2, max: 2, step: 0.01 },
     noiseMove: { val: 0, min: 0, max: 2, step: 0.01 }
 });
 
-// Initialize defaults
-state.stripes.push(stripeTemplate());
-state.ripples.push(rippleTemplate());
+function createDefaultState() {
+    return {
+        colors: {
+            colorCount: { val: 2, type: 'select', options: [2, 3] },
+            col1: { val: '#000000', type: 'color' },
+            col2: { val: '#ff0000', type: 'color' },
+            col3: { val: '#00aaff', type: 'color' }
+        },
+        colorAnim: {
+            oscActive: { val: 0, type: 'boolean' },
+            oscFreq: { val: 0.5, min: 0, max: 40, step: 0.01 },
+            oscShape: { val: 1.0, min: 0.1, max: 10.0, step: 0.1 }
+        },
+        global: {
+            scale: { val: 2.0, min: 0.1, max: 100, step: 0.1 },
+            shearX: { val: 0, min: -2, max: 2, step: 0.01 },
+            shearY: { val: 0, min: -2, max: 2, step: 0.01 },
+            offsetX: { val: 0, min: -1, max: 1, step: 0.1 },
+            offsetY: { val: 0, min: -1, max: 1, step: 0.1 },
+            shakeAmp: { val: 0, min: 0, max: 0.1, step: 0.001 },
+            shakeFreq: { val: 5, min: 0, max: 40, step: 0.1 },
+            rotSpeed: { val: 0, min: -5, max: 5, step: 0.01 },
+            stepFactor: { val: 0, min: 0, max: 1, step: 0.01 }
+        },
+        postProcessing: {
+            trailAmount: { val: 0.0, min: 0, max: 0.99, step: 0.01 },
+            blurRadius: { val: 0.0, min: 0, max: 15.0, step: 0.1 },
+            glowStrength: { val: 0.0, min: 0, max: 3.0, step: 0.01 },
+            brightness: { val: 0.0, min: -1.0, max: 1.0, step: 0.01 },
+            contrast: { val: 1.0, min: 0.0, max: 3.0, step: 0.01 }
+        },
+        effects: {
+            noiseFreq: { val: 1, min: 0.1, max: 5, step: 0.1 },
+            noiseStrength: { val: 0, min: 0, max: 1, step: 0.01 },
+            noiseBias: { val: 0.5, min: 0, max: 1, step: 0.5 },
+            vigCenter: { val: 0.0, min: 0, max: 5, step: 0.01 },
+            vigEdge: { val: 2.0, min: 0, max: 5, step: 0.01 },
+            vigBias: { val: 0, min: 0, max: 1, step: 0.5 }
+        },
+        stripes: [stripeTemplate()], 
+        ripples: [rippleTemplate()], 
+        rays: []
+    };
+}
+
+let state = createDefaultState();
+
+// --- State Serialization (URL Handling) ---
+function getStateVals() {
+    const v = { c: {}, a: {}, g: {}, p: {}, e: {}, s: [], r: [], y: [] };
+    for(let k in state.colors) v.c[k] = state.colors[k].val;
+    for(let k in state.colorAnim) v.a[k] = state.colorAnim[k].val;
+    for(let k in state.global) v.g[k] = state.global[k].val;
+    for(let k in state.postProcessing) v.p[k] = state.postProcessing[k].val;
+    for(let k in state.effects) v.e[k] = state.effects[k].val;
+    state.stripes.forEach(x => { let o={}; for(let k in x) o[k]=x[k].val; v.s.push(o); });
+    state.ripples.forEach(x => { let o={}; for(let k in x) o[k]=x[k].val; v.r.push(o); });
+    state.rays.forEach(x => { let o={}; for(let k in x) o[k]=x[k].val; v.y.push(o); });
+    return v;
+}
+
+function loadStateVals(v) {
+    if(!v) return;
+    if(v.c) for(let k in v.c) if(state.colors[k]) state.colors[k].val = v.c[k];
+    if(v.a) for(let k in v.a) if(state.colorAnim[k]) state.colorAnim[k].val = v.a[k];
+    if(v.g) for(let k in v.g) if(state.global[k]) state.global[k].val = v.g[k];
+    if(v.p) for(let k in v.p) if(state.postProcessing[k]) state.postProcessing[k].val = v.p[k];
+    if(v.e) for(let k in v.e) if(state.effects[k]) state.effects[k].val = v.e[k];
+    
+    const loadArr = (arrState, arrVals, template) => {
+        arrState.length = 0; 
+        if(arrVals) arrVals.forEach(valObj => {
+            let temp = template();
+            for(let k in valObj) if(temp[k]) temp[k].val = valObj[k];
+            arrState.push(temp);
+        });
+    };
+    loadArr(state.stripes, v.s, stripeTemplate);
+    loadArr(state.ripples, v.r, rippleTemplate);
+    loadArr(state.rays, v.y, rayTemplate);
+}
+
+function updateURL() {
+    const hash = btoa(JSON.stringify(getStateVals()));
+    history.replaceState(null, '', '#' + hash);
+}
+
+function initFromURL() {
+    if(window.location.hash) {
+        try {
+            const vals = JSON.parse(atob(window.location.hash.slice(1)));
+            loadStateVals(vals);
+        } catch(e) { console.error("Failed to load state from URL", e); }
+    } else {
+        updateURL();
+    }
+}
 
 // --- UI Generation ---
 function createUI() {
@@ -351,265 +422,288 @@ function createUI() {
         const h2 = document.createElement('h2');
         h2.textContent = title + (isArray ? ` (${schemaObj.length}/${MAX_INSTANCES})` : '');
         sec.appendChild(h2);
-
         const content = document.createElement('div');
         content.className = 'collapsible-content active';
-        
         h2.onclick = () => content.classList.toggle('active');
 
         if (isArray) {
-            const btns = document.createElement('div');
-            btns.className = 'add-remove-btns';
-            const addBtn = document.createElement('button');
-            addBtn.textContent = 'Add +';
-            addBtn.onclick = () => {
-                if (state[arrayKey].length < MAX_INSTANCES) {
-                    const temp = arrayKey === 'stripes' ? stripeTemplate() : (arrayKey === 'ripples' ? rippleTemplate() : rayTemplate());
-                    state[arrayKey].push(temp);
-                    createUI();
-                }
+            const btns = document.createElement('div'); btns.className = 'add-remove-btns';
+            const addBtn = document.createElement('button'); addBtn.textContent = 'Add +';
+            addBtn.onclick = () => { 
+                if (state[arrayKey].length < MAX_INSTANCES) { 
+                    state[arrayKey].push(arrayKey === 'stripes' ? stripeTemplate() : (arrayKey === 'ripples' ? rippleTemplate() : rayTemplate())); 
+                    updateURL(); createUI(); 
+                } 
             };
-            const remBtn = document.createElement('button');
-            remBtn.className = 'remove';
-            remBtn.textContent = 'Remove -';
-            remBtn.onclick = () => {
-                if (state[arrayKey].length > 0) {
-                    state[arrayKey].pop();
-                    createUI();
-                }
+            const remBtn = document.createElement('button'); remBtn.className = 'remove'; remBtn.textContent = 'Remove -';
+            remBtn.onclick = () => { 
+                if (state[arrayKey].length > 0) { 
+                    state[arrayKey].pop(); 
+                    updateURL(); createUI(); 
+                } 
             };
-            btns.appendChild(addBtn);
-            btns.appendChild(remBtn);
-            content.appendChild(btns);
+            btns.append(addBtn, remBtn); content.appendChild(btns);
 
             schemaObj.forEach((item, index) => {
-                const grp = document.createElement('div');
-                grp.className = 'control-group';
-                const label = document.createElement('strong');
-                label.textContent = `${title.slice(0, -1)} ${index + 1}`;
-                grp.appendChild(label);
-                buildInputs(item, grp);
-                content.appendChild(grp);
+                const grp = document.createElement('div'); grp.className = 'control-group';
+                const label = document.createElement('strong'); label.textContent = `${title.slice(0, -1)} ${index + 1}`;
+                grp.appendChild(label); buildInputs(item, grp); content.appendChild(grp);
             });
         } else {
-            const grp = document.createElement('div');
-            grp.className = 'control-group';
-            buildInputs(schemaObj, grp);
-            content.appendChild(grp);
+            const grp = document.createElement('div'); grp.className = 'control-group';
+            buildInputs(schemaObj, grp); content.appendChild(grp);
         }
-
-        sec.appendChild(content);
-        root.appendChild(sec);
+        sec.appendChild(content); root.appendChild(sec);
     }
 
     function buildInputs(obj, parent) {
         for (const [key, prop] of Object.entries(obj)) {
             if (prop.type === 'hidden') continue;
-            
-            const row = document.createElement('div');
-            row.className = 'control-row';
-            
-            const label = document.createElement('span');
-            label.textContent = key;
-            row.appendChild(label);
+            const row = document.createElement('div'); row.className = 'control-row';
+            const label = document.createElement('span'); label.textContent = key; row.appendChild(label);
 
             if (prop.type === 'color') {
-                const inp = document.createElement('input');
-                inp.type = 'color';
-                inp.value = prop.val;
-                inp.addEventListener('input', e => prop.val = e.target.value);
-                row.appendChild(inp);
+                const inp = document.createElement('input'); inp.type = 'color'; inp.value = prop.val;
+                inp.addEventListener('input', e => { prop.val = e.target.value; updateURL(); }); row.appendChild(inp);
+            } else if (prop.type === 'boolean') {
+                const chk = document.createElement('input'); chk.type = 'checkbox'; chk.checked = prop.val === 1;
+                chk.addEventListener('change', e => { prop.val = e.target.checked ? 1 : 0; updateURL(); }); row.appendChild(chk);
+            } else if (prop.type === 'select') {
+                const sel = document.createElement('select');
+                prop.options.forEach(opt => {
+                    const o = document.createElement('option'); o.value = opt; o.textContent = opt; sel.appendChild(o);
+                });
+                sel.value = prop.val;
+                sel.addEventListener('change', e => { prop.val = parseInt(e.target.value); updateURL(); }); row.appendChild(sel);
             } else {
-                const range = document.createElement('input');
-                range.type = 'range';
-                range.min = prop.min; range.max = prop.max; range.step = prop.step || 1;
-                range.value = prop.val;
-
-                const num = document.createElement('input');
-                num.type = 'number';
-                num.min = prop.min; num.max = prop.max; num.step = prop.step || 1;
-                num.value = prop.val;
-
-                const sync = (val) => {
-                    let v = parseFloat(val);
-                    if(isNaN(v)) return;
-                    prop.val = v;
-                    range.value = v;
-                    num.value = v;
+                const range = document.createElement('input'); range.type = 'range'; range.min = prop.min; range.max = prop.max; range.step = prop.step || 1; range.value = prop.val;
+                const num = document.createElement('input'); num.type = 'number'; num.min = prop.min; num.max = prop.max; num.step = prop.step || 1; num.value = prop.val;
+                const sync = (val) => { 
+                    let v = parseFloat(val); 
+                    if(!isNaN(v)){ prop.val = v; range.value = v; num.value = v; updateURL(); } 
                 };
-
-                range.addEventListener('input', e => sync(e.target.value));
-                num.addEventListener('input', e => sync(e.target.value));
-
-                row.appendChild(range);
-                row.appendChild(num);
+                range.addEventListener('input', e => sync(e.target.value)); num.addEventListener('input', e => sync(e.target.value));
+                row.append(range, num);
             }
             parent.appendChild(row);
         }
     }
 
     buildSection('Colors', state.colors);
+    buildSection('Color Animation', state.colorAnim);
     buildSection('Global Transforms', state.global);
-    buildSection('Post Processing', state.effects);
+    buildSection('Post Processing', state.postProcessing);
+    buildSection('In-Shader Effects', state.effects);
     buildSection('Stripes', state.stripes, true, 'stripes');
     buildSection('Ripples', state.ripples, true, 'ripples');
     buildSection('Rays', state.rays, true, 'rays');
 }
 
-document.getElementById('btn-randomise').onclick = () => {
-    function randomizeObj(obj) {
-        for (const prop of Object.values(obj)) {
-            if (prop.type === 'color') {
-                prop.val = '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0');
-            } else if (prop.type !== 'hidden') {
-                const range = prop.max - prop.min;
-                let r = prop.min + Math.random() * range;
-                if(prop.step >= 1) r = Math.round(r);
-                prop.val = r;
-            }
-        }
-    }
-    randomizeObj(state.global);
-    randomizeObj(state.effects);
-    state.stripes.forEach(randomizeObj);
-    state.ripples.forEach(randomizeObj);
-    state.rays.forEach(randomizeObj);
+// Reset Logic
+document.getElementById('btn-reset').onclick = () => {
+    state = createDefaultState();
+    updateURL();
     createUI();
 };
 
+// Smart Randomisation Logic
+document.getElementById('btn-randomise').onclick = () => {
+    function randomizeObj(obj, category) {
+        for (const [key, prop] of Object.entries(obj)) {
+            if (prop.type === 'color') {
+                // Bright colours to avoid invisible mixes
+                const r = Math.floor(Math.random() * 155 + 100);
+                const g = Math.floor(Math.random() * 155 + 100);
+                const b = Math.floor(Math.random() * 155 + 100);
+                prop.val = '#' + (1 << 24 | r << 16 | g << 8 | b).toString(16).slice(1);
+            } else if (prop.type === 'boolean') {
+                prop.val = Math.random() > 0.8 ? 1 : 0; // Usually false
+            } else if (prop.type !== 'hidden' && prop.type !== 'select') {
+                let r = prop.min + Math.random() * (prop.max - prop.min);
+                
+                // Specific constraints to prevent ugly / blank visualisations
+                if (category === 'postProcessing' && ['blurRadius', 'glowStrength', 'trailAmount'].includes(key)) {
+                    r = Math.random() > 0.85 ? r : 0; // Usually 0
+                }
+                if (category === 'global' && ['shearX', 'shearY', 'shakeAmp'].includes(key)) {
+                    r = Math.random() > 0.85 ? r : 0; // Usually 0
+                }
+                if (key === 'scale') {
+                    // Restrict scale mostly to small boundaries so screen isn't filled with solid colour.
+                    r = Math.random() > 0.15 ? 0.5 + Math.random() * 4.5 : r;
+                }
+                if (category === 'effects' && ['vigEdge', 'vigCenter'].includes(key)) {
+                    r = Math.random() > 0.85 ? r : prop.max; // Usually disabled/maxed out
+                }
+                if (key === 'extent') {
+                    r = Math.random() > 0.85 ? r : 0; // Usually infinite extent
+                }
+
+                prop.val = prop.step >= 1 ? Math.round(r) : parseFloat(r.toFixed(3));
+            }
+        }
+    }
+    
+    randomizeObj(state.global, 'global'); 
+    randomizeObj(state.effects, 'effects'); 
+    randomizeObj(state.colorAnim, 'anim'); 
+    randomizeObj(state.postProcessing, 'postProcessing'); 
+    
+    state.stripes.forEach(s => randomizeObj(s, 'pattern')); 
+    state.ripples.forEach(r => randomizeObj(r, 'pattern')); 
+    state.rays.forEach(ry => randomizeObj(ry, 'pattern'));
+    
+    updateURL();
+    createUI();
+};
+
+initFromURL();
 createUI();
 
 // --- WebGL Setup ---
 const canvas = document.getElementById('glcanvas');
 const gl = canvas.getContext('webgl2');
-
-if (!gl) {
-    alert("WebGL 2 not supported in this browser.");
-}
+if (!gl) alert("WebGL 2 not supported.");
 
 function compileShader(type, source) {
     const s = gl.createShader(type);
-    gl.shaderSource(s, source);
-    gl.compileShader(s);
-    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
-        console.error(gl.getShaderInfoLog(s));
-        gl.deleteShader(s);
-        return null;
-    }
+    gl.shaderSource(s, source); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { console.error(gl.getShaderInfoLog(s)); return null; }
     return s;
 }
 
-const prog = gl.createProgram();
-gl.attachShader(prog, compileShader(gl.VERTEX_SHADER, vsSource));
-gl.attachShader(prog, compileShader(gl.FRAGMENT_SHADER, fsSource));
-gl.linkProgram(prog);
-gl.useProgram(prog);
+function createProgram(vs, fs) {
+    const p = gl.createProgram();
+    gl.attachShader(p, compileShader(gl.VERTEX_SHADER, vs));
+    gl.attachShader(p, compileShader(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(p);
+    return p;
+}
+
+const progMain = createProgram(vsSource, fsMain);
+const progTrail = createProgram(vsSource, fsTrail);
+const progPost = createProgram(vsSource, fsPost);
 
 const posBuffer = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
-gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-    -1, -1,  1, -1, -1,  1,
-    -1,  1,  1, -1,  1,  1
-]), gl.STATIC_DRAW);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
 
-const posLoc = gl.getAttribLocation(prog, "a_position");
-gl.enableVertexAttribArray(posLoc);
-gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-
-// --- Uniform Upload Helpers ---
-function hexToRGB(hex) {
-    const r = parseInt(hex.slice(1, 3), 16) / 255;
-    const g = parseInt(hex.slice(3, 5), 16) / 255;
-    const b = parseInt(hex.slice(5, 7), 16) / 255;
-    return [r, g, b];
+function setupQuad(prog) {
+    const posLoc = gl.getAttribLocation(prog, "a_position");
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
 }
 
-function set1f(name, val) { gl.uniform1f(gl.getUniformLocation(prog, name), val); }
-function set2f(name, x, y) { gl.uniform2f(gl.getUniformLocation(prog, name), x, y); }
-function set3f(name, x, y, z) { gl.uniform3f(gl.getUniformLocation(prog, name), x, y, z); }
+function createFBO(w, h) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    return { fbo, tex };
+}
+
+let w = 0, h = 0;
+let mainFBO, trailReadFBO, trailWriteFBO;
+
+function hexToRGB(hex) { return [parseInt(hex.slice(1,3),16)/255, parseInt(hex.slice(3,5),16)/255, parseInt(hex.slice(5,7),16)/255]; }
+function set1f(prog, name, val) { gl.uniform1f(gl.getUniformLocation(prog, name), val); }
+function set1i(prog, name, val) { gl.uniform1i(gl.getUniformLocation(prog, name), val); }
+function set2f(prog, name, x, y) { gl.uniform2f(gl.getUniformLocation(prog, name), x, y); }
+function set3f(prog, name, x, y, z) { gl.uniform3f(gl.getUniformLocation(prog, name), x, y, z); }
 
 let startTime = performance.now();
 
 function render() {
-    // Handle resizing
     const rect = canvas.parentNode.getBoundingClientRect();
     if (canvas.width !== rect.width || canvas.height !== rect.height) {
-        canvas.width = rect.width;
-        canvas.height = rect.height;
-        gl.viewport(0, 0, canvas.width, canvas.height);
+        canvas.width = rect.width; canvas.height = rect.height;
+        w = canvas.width; h = canvas.height;
+        mainFBO = createFBO(w, h);
+        trailReadFBO = createFBO(w, h);
+        trailWriteFBO = createFBO(w, h);
     }
 
     const time = (performance.now() - startTime) * 0.001;
 
-    set2f("u_resolution", canvas.width, canvas.height);
-    set1f("u_time", time);
+    // --- Pass 1: Render Main Interference ---
+    gl.useProgram(progMain);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, mainFBO.fbo);
+    gl.viewport(0, 0, w, h);
+    setupQuad(progMain);
 
-    // Colors
-    const c1 = hexToRGB(state.colors.col1.val);
-    const c2 = hexToRGB(state.colors.col2.val);
-    const c3 = hexToRGB(state.colors.col3.val);
-    set3f("u_color1", ...c1); set3f("u_color2", ...c2); set3f("u_color3", ...c3);
+    set2f(progMain, "u_resolution", w, h);
+    set1f(progMain, "u_time", time);
+    
+    set1i(progMain, "u_colorCount", state.colors.colorCount.val);
+    set3f(progMain, "u_color1", ...hexToRGB(state.colors.col1.val)); 
+    set3f(progMain, "u_color2", ...hexToRGB(state.colors.col2.val)); 
+    set3f(progMain, "u_color3", ...hexToRGB(state.colors.col3.val));
+    
+    set1f(progMain, "u_oscActive", state.colorAnim.oscActive.val);
+    set1f(progMain, "u_oscFreq", state.colorAnim.oscFreq.val);
+    set1f(progMain, "u_oscShape", state.colorAnim.oscShape.val);
 
-    // Global
-    set1f("u_scale", state.global.scale.val);
-    set2f("u_shear", state.global.shearX.val, state.global.shearY.val);
-    set2f("u_offset", state.global.offsetX.val, state.global.offsetY.val);
-    set1f("u_shake_amp", state.global.shakeAmp.val);
-    set1f("u_shake_freq", state.global.shakeFreq.val);
-    set1f("u_rot_speed", state.global.rotSpeed.val);
-    set1f("u_step_factor", state.global.stepFactor.val);
+    set1f(progMain, "u_scale", state.global.scale.val);
+    set2f(progMain, "u_shear", state.global.shearX.val, state.global.shearY.val);
+    set2f(progMain, "u_offset", state.global.offsetX.val, state.global.offsetY.val);
+    set1f(progMain, "u_shake_amp", state.global.shakeAmp.val);
+    set1f(progMain, "u_shake_freq", state.global.shakeFreq.val);
+    set1f(progMain, "u_rot_speed", state.global.rotSpeed.val);
+    set1f(progMain, "u_step_factor", state.global.stepFactor.val);
 
-    // Post processing
-    set1f("u_noise_freq", state.effects.noiseFreq.val);
-    set1f("u_noise_strength", state.effects.noiseStrength.val);
-    set1f("u_noise_bias", state.effects.noiseBias.val);
-    set1f("u_vig_center", state.effects.vigCenter.val);
-    set1f("u_vig_edge", state.effects.vigEdge.val);
-    set1f("u_vig_bias", state.effects.vigBias.val);
+    // Vignetting happens in main
+    set1f(progMain, "u_vig_center", state.effects.vigCenter.val);
+    set1f(progMain, "u_vig_edge", state.effects.vigEdge.val);
+    set1f(progMain, "u_vig_bias", state.effects.vigBias.val);
 
-    // Arrays Upload
     for(let i=0; i<MAX_INSTANCES; i++) {
-        // Stripes
         let s = state.stripes[i];
-        if (s) {
-            set1f(`u_stripes[${i}].is_active`, 1.0);
-            set2f(`u_stripes[${i}].pivot`, s.pivotX.val, s.pivotY.val);
-            set1f(`u_stripes[${i}].period`, s.period.val);
-            set1f(`u_stripes[${i}].angle`, s.angle.val);
-            set1f(`u_stripes[${i}].speed`, s.speed.val);
-            set1f(`u_stripes[${i}].rot_speed`, s.rotSpeed.val);
-            set1f(`u_stripes[${i}].extent`, s.extent.val);
-            set1f(`u_stripes[${i}].strength`, s.strength.val);
-        } else set1f(`u_stripes[${i}].is_active`, 0.0);
-
-        // Ripples
+        if (s) { set1f(progMain, `u_stripes[${i}].is_active`, 1.0); set2f(progMain, `u_stripes[${i}].pivot`, s.pivotX.val, s.pivotY.val); set1f(progMain, `u_stripes[${i}].period`, s.period.val); set1f(progMain, `u_stripes[${i}].angle`, s.angle.val); set1f(progMain, `u_stripes[${i}].speed`, s.speed.val); set1f(progMain, `u_stripes[${i}].rot_speed`, s.rotSpeed.val); set1f(progMain, `u_stripes[${i}].extent`, s.extent.val); set1f(progMain, `u_stripes[${i}].strength`, s.strength.val); } else set1f(progMain, `u_stripes[${i}].is_active`, 0.0);
         let r = state.ripples[i];
-        if (r) {
-            set1f(`u_ripples[${i}].is_active`, 1.0);
-            set2f(`u_ripples[${i}].pivot`, r.pivotX.val, r.pivotY.val);
-            set1f(`u_ripples[${i}].period`, r.period.val);
-            set1f(`u_ripples[${i}].speed`, r.speed.val);
-            set2f(`u_ripples[${i}].rot_pivot`, r.rotPivX.val, r.rotPivY.val);
-            set1f(`u_ripples[${i}].rot_speed`, r.rotSpeed.val);
-            set1f(`u_ripples[${i}].noise_move`, r.noiseMove.val);
-            set1f(`u_ripples[${i}].strength`, r.strength.val);
-        } else set1f(`u_ripples[${i}].is_active`, 0.0);
-
-        // Rays
+        if (r) { set1f(progMain, `u_ripples[${i}].is_active`, 1.0); set2f(progMain, `u_ripples[${i}].pivot`, r.pivotX.val, r.pivotY.val); set1f(progMain, `u_ripples[${i}].period`, r.period.val); set1f(progMain, `u_ripples[${i}].speed`, r.speed.val); set2f(progMain, `u_ripples[${i}].rot_pivot`, r.rotPivX.val, r.rotPivY.val); set1f(progMain, `u_ripples[${i}].rot_speed`, r.rotSpeed.val); set1f(progMain, `u_ripples[${i}].noise_move`, r.noiseMove.val); set1f(progMain, `u_ripples[${i}].strength`, r.strength.val); } else set1f(progMain, `u_ripples[${i}].is_active`, 0.0);
         let ry = state.rays[i];
-        if (ry) {
-            set1f(`u_rays[${i}].is_active`, 1.0);
-            set2f(`u_rays[${i}].pivot`, ry.pivotX.val, ry.pivotY.val);
-            set1f(`u_rays[${i}].period`, ry.period.val);
-            set1f(`u_rays[${i}].speed`, ry.speed.val);
-            set2f(`u_rays[${i}].rot_pivot`, ry.rotPivX.val, ry.rotPivY.val);
-            set1f(`u_rays[${i}].rot_speed`, ry.rotSpeed.val);
-            set1f(`u_rays[${i}].noise_move`, ry.noiseMove.val);
-            set1f(`u_rays[${i}].strength`, ry.strength.val);
-        } else set1f(`u_rays[${i}].is_active`, 0.0);
+        if (ry) { set1f(progMain, `u_rays[${i}].is_active`, 1.0); set2f(progMain, `u_rays[${i}].pivot`, ry.pivotX.val, ry.pivotY.val); set1f(progMain, `u_rays[${i}].period`, ry.period.val); set1f(progMain, `u_rays[${i}].speed`, ry.speed.val); set2f(progMain, `u_rays[${i}].rot_pivot`, ry.rotPivX.val, ry.rotPivY.val); set1f(progMain, `u_rays[${i}].rot_speed`, ry.rotSpeed.val); set1f(progMain, `u_rays[${i}].noise_move`, ry.noiseMove.val); set1f(progMain, `u_rays[${i}].strength`, ry.strength.val); } else set1f(progMain, `u_rays[${i}].is_active`, 0.0);
     }
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    // --- Pass 2: Trail Combine ---
+    gl.useProgram(progTrail);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, trailWriteFBO.fbo);
+    setupQuad(progTrail);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, mainFBO.tex); set1i(progTrail, "u_main", 0);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, trailReadFBO.tex); set1i(progTrail, "u_history", 1);
+    set1f(progTrail, "u_trail", state.postProcessing.trailAmount.val);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    // --- Pass 3: Screen Post-Processing (Blur/Glow/Contrast/Noise) ---
+    gl.useProgram(progPost);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null); 
+    setupQuad(progPost);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, trailWriteFBO.tex); set1i(progPost, "u_image", 0);
+    
+    set2f(progPost, "u_res", w, h);
+    set1f(progPost, "u_time", time);
+    set1f(progPost, "u_blurRadius", state.postProcessing.blurRadius.val);
+    set1f(progPost, "u_glow", state.postProcessing.glowStrength.val);
+    set1f(progPost, "u_brightness", state.postProcessing.brightness.val);
+    set1f(progPost, "u_contrast", state.postProcessing.contrast.val);
+
+    // Noise properties moved to Post-Pass
+    set1f(progPost, "u_noise_freq", state.effects.noiseFreq.val);
+    set1f(progPost, "u_noise_strength", state.effects.noiseStrength.val);
+    set1f(progPost, "u_noise_bias", state.effects.noiseBias.val);
 
     gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    // Swap Trail FBOs
+    let temp = trailReadFBO; trailReadFBO = trailWriteFBO; trailWriteFBO = temp;
+
     requestAnimationFrame(render);
 }
 
